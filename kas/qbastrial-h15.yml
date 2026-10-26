@@ -5,6 +5,7 @@ header:
 # shell wins. The CI sets QBA_SECURE_ASSETS_DIR to the private directory that holds the key.
 env:
   QBA_SECURE_ASSETS_DIR: ""
+  QBA_SWU_PRIVATE_KEY: ""
   SYSELE_BSP_VERSION: "unreleased"
 
 repos:

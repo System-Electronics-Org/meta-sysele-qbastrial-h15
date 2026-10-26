@@ -54,6 +54,30 @@ jobs:
           fi
           echo "Secure boot key is valid and has the expected modulus (${got:0:16})."
 
+      # Same idea for the key that signs the SWU: it must be there and be a valid RSA key before hours of compiling.
+      # The public half is derived from it and goes into the images (swupdate-public-key), so the key the image
+      # trusts is, by construction, the one the SWU is signed with.
+      - name: Check the SWU signing key
+        env:
+          SWU_SIGNING_KEY: ${{ secrets.SWU_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SWU_SIGNING_KEY" ]; then
+            echo "::error::Secret SWU_SIGNING_KEY is missing. Without it the SWU cannot be signed, and the images would refuse an unsigned one."
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/qba-assets"
+          printf '%s\n' "$SWU_SIGNING_KEY" > "$RUNNER_TEMP/qba-assets/swu_signing_key.pem"
+          if ! openssl rsa -in "$RUNNER_TEMP/qba-assets/swu_signing_key.pem" -check -noout >/dev/null 2>&1; then
+            echo "::error::SWU_SIGNING_KEY is not a valid RSA private key (truncated or wrong paste?)."
+            exit 1
+          fi
+          openssl pkey -in "$RUNNER_TEMP/qba-assets/swu_signing_key.pem" -pubout -out "$RUNNER_TEMP/qba-assets/swupdate-public.pem"
+          pub=$(openssl pkey -pubin -in "$RUNNER_TEMP/qba-assets/swupdate-public.pem" -outform DER | sha256sum | cut -c1-16)
+          echo "SWU signing key is valid. Public key fingerprint (sha256 of the DER, first 16 hex): $pub"
+          echo "SWU_PUBKEY_FINGERPRINT=$pub" >> "$GITHUB_ENV"
+
       - name: Install Dependencies
         run: |
           echo "BB_ISOLATE_NETWORK=0" >> $GITHUB_ENV
@@ -133,6 +157,7 @@ jobs:
 
           # Where the base layer finds the key (see recipes-bsp/hailo-secureboot-assets here).
           export QBA_SECURE_ASSETS_DIR="$RUNNER_TEMP/qba-assets"
+          export QBA_SWU_PRIVATE_KEY="$RUNNER_TEMP/qba-assets/swu_signing_key.pem"
 
           # Readable BSP version, shown on the board by sysele-info. Only a tag sets it; any other
           # build stays "unreleased".
@@ -145,7 +170,7 @@ jobs:
           export BB_CONSOLELOG=""
           export BB_DEFAULT_TASK="build"
           export GITHUB_ACTIONS_BUILD=1
-          export BB_ENV_PASSTHROUGH_ADDITIONS="QBA_SECURE_ASSETS_DIR SYSELE_BSP_VERSION GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID BB_ISOLATE_NETWORK BB_NO_NETWORK BITBAKE_UI_OPTS BB_LOGCONFIG BB_CONSOLELOG BB_DEFAULT_TASK GITHUB_ACTIONS_BUILD"
+          export BB_ENV_PASSTHROUGH_ADDITIONS="QBA_SECURE_ASSETS_DIR QBA_SWU_PRIVATE_KEY SYSELE_BSP_VERSION GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID BB_ISOLATE_NETWORK BB_NO_NETWORK BITBAKE_UI_OPTS BB_LOGCONFIG BB_CONSOLELOG BB_DEFAULT_TASK GITHUB_ACTIONS_BUILD"
 
           set -e
           if ! kas build qbastrial-h15-ci.yml -- -k; then
@@ -293,6 +318,9 @@ jobs:
             Download and extract `${{ env.ARCHIVE_NAME }}.tar.gz`. The SPI-NOR is programmed once through
             the mask ROM on UART1 with `program_spi_flash.sh`; the system image `core-image-hailo-dev-astrial-h15.wic`
             goes to the eMMC over TFTP from the U-Boot menu.
+
+            The SWU is signed (RSA-PSS). The images only accept an SWU signed with the key whose public part has
+            fingerprint `${{ env.SWU_PUBKEY_FINGERPRINT }}` (sha256 of the DER, first 16 hex characters).
 
             Flashing needs Hailo's `hailo15_board_tools` Python package, which is not included here.
           files: ${{ env.ARCHIVE_NAME }}.tar.gz
