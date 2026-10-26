@@ -18,7 +18,8 @@ and Linux talk on UART0.
 ## Status
 
 v0.0.0 builds and boots on an Astrial H15 board: SPL, U-Boot and the login on UART0, wic update over TFTP,
-automatic boot from eMMC afterwards. Not yet wired into a kas file or a CI workflow.
+automatic boot from eMMC afterwards. `kas/qbastrial-h15.yml` and `.github/workflows/build.yml` build it in CI;
+the workflow has not run yet.
 
 ## What v0.0.0 changes on top of `meta-sysele-astrial-h15` (`kirkstone`)
 
@@ -34,3 +35,10 @@ automatic boot from eMMC afterwards. Not yet wired into a kas file or a CI workf
 
 Build order: `u-boot u-boot-tfa-image`, then `swupdate-image`, then `core-image-hailo-dev`, each as its own
 `bitbake` command (the image needs `swupdate-image-*.ext4.gz` in the boot partition without declaring it).
+
+## CI
+
+`.github/workflows/build.yml` runs on a manual dispatch or on a tag `vX.Y.Z`. It clones `meta-sysele-astrial-h15` at the
+commit pinned in `BASE_LAYER_REF`, checks the secure boot key first (valid RSA key, expected modulus), builds with kas
+and, on a tag, publishes the release. The key comes from the repository secret `HAILO_CUSTOMER_KEYPAIR`. There is no
+`pull_request` trigger, so a fork cannot reach the secret.

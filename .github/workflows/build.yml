@@ -1,0 +1,301 @@
+name: QBAstrial H15 Yocto Build
+
+run-name: QBAstrial H15 Build • ${{ github.ref_name }}
+
+# Builds the QBAstrial H15 image on top of meta-sysele-astrial-h15, which is cloned at a pinned
+# commit. A tag v*.*.* publishes a release; a manual run only leaves the artifacts of the run.
+#
+# No pull_request trigger on purpose: this repository is public and the build uses the secure boot
+# key, which a workflow started from a fork must never see.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+'
+
+env:
+  # meta-sysele-astrial-h15, branch kirkstone. Bump it on purpose, with a commit of this repository.
+  BASE_LAYER_REPO: System-Electronics-Org/meta-sysele-h15-5.15.32
+  BASE_LAYER_REF: cebabf589eb27855bfa58372d708bb42c7bd14f2
+  HAILO_SOC_TAG: 1.12.0
+  # sha256 of the output of `openssl rsa -noout -modulus` for the customer key pair (modulus 9E71...).
+  # It is derived from the public part: it identifies the key, it does not reveal it.
+  KEY_MODULUS_SHA256: baa96baf0ea08e7d31c3986972b9ea240132d265a882219ae5015b25f80f9155
+
+jobs:
+  build:
+    runs-on: ubuntu-large-runner
+    permissions:
+      contents: write
+    steps:
+      # First step on purpose: a missing or wrong key must stop the run in seconds, not after hours
+      # of compiling, and a build without the key would be refused by the SPL anyway.
+      - name: Check the secure boot key
+        env:
+          HAILO_CUSTOMER_KEYPAIR: ${{ secrets.HAILO_CUSTOMER_KEYPAIR }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HAILO_CUSTOMER_KEYPAIR" ]; then
+            echo "::error::Secret HAILO_CUSTOMER_KEYPAIR is missing. A build without it cannot be flashed."
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/qba-assets"
+          printf '%s\n' "$HAILO_CUSTOMER_KEYPAIR" > "$RUNNER_TEMP/qba-assets/customer_keypair.pem"
+          if ! openssl rsa -in "$RUNNER_TEMP/qba-assets/customer_keypair.pem" -check -noout >/dev/null 2>&1; then
+            echo "::error::HAILO_CUSTOMER_KEYPAIR is not a valid RSA private key (truncated or wrong paste?)."
+            exit 1
+          fi
+          got=$(openssl rsa -in "$RUNNER_TEMP/qba-assets/customer_keypair.pem" -noout -modulus 2>/dev/null | sha256sum | cut -d' ' -f1)
+          if [ "$got" != "$KEY_MODULUS_SHA256" ]; then
+            echo "::error::HAILO_CUSTOMER_KEYPAIR is a valid key but not the expected one (modulus hash ${got:0:16}, expected ${KEY_MODULUS_SHA256:0:16})."
+            exit 1
+          fi
+          echo "Secure boot key is valid and has the expected modulus (${got:0:16})."
+
+      - name: Install Dependencies
+        run: |
+          echo "BB_ISOLATE_NETWORK=0" >> $GITHUB_ENV
+          echo "BB_NO_NETWORK=0" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y gawk wget git diffstat unzip texinfo gcc build-essential \
+            chrpath socat cpio python3 python3-pip python3-pexpect xz-utils debianutils \
+            iputils-ping python3-git python3-jinja2 libegl1 libsdl1.2-dev \
+            python3-subunit mesa-common-dev zstd liblz4-tool file locales libacl1 \
+            curl python-is-python3 bmap-tools u-boot-tools
+          sudo locale-gen en_US.UTF-8
+          sudo pip3 install "kas==5.3"
+          kas --version
+
+      - name: Checkout this layer
+        uses: actions/checkout@v4
+        with:
+          path: meta-sysele-qbastrial-h15
+
+      - name: Checkout the base layer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BASE_LAYER_REPO }}
+          ref: ${{ env.BASE_LAYER_REF }}
+          path: meta-sysele-bsp
+
+      - name: Setup Build Environment
+        run: |
+          git clone --branch "$HAILO_SOC_TAG" --single-branch \
+            https://github.com/hailo-ai/meta-hailo-soc.git
+          cd meta-hailo-soc
+          git submodule update --init --recursive
+          cp -r ../meta-sysele-bsp ./meta-sysele-bsp
+          cp -r ../meta-sysele-qbastrial-h15 ./meta-sysele-qbastrial-h15
+
+          # The last include of the base layer (machine.yml) carries the poky pin.
+          cat > qbastrial-h15-ci.yml <<'KAS'
+          header:
+            version: 11
+            includes:
+              - kas/yocto-base.yml
+              - meta-sysele-bsp/kas/astrial-h15-vpu-base.yml
+              - kas/targets/hailo-soc-target-core-image-hailo-dev.yml
+              - meta-sysele-bsp/kas/astrial-h15-machine.yml
+              - meta-sysele-qbastrial-h15/kas/qbastrial-h15.yml
+
+          build_system: openembedded
+          KAS
+          echo "===== qbastrial-h15-ci.yml ====="
+          cat qbastrial-h15-ci.yml
+
+      - name: Create Patch for BitBake Network Isolation
+        run: |
+          cd meta-hailo-soc
+          BB_WORKER=$(find . -name "bitbake-worker" -type f | head -n 1)
+          if [ -n "$BB_WORKER" ]; then
+            cp "$BB_WORKER" "$BB_WORKER.orig"
+            sed -i 's/bb.utils.disable_network(uid, gid)/# Network isolation disabled for CI build/' "$BB_WORKER"
+          else
+            echo "Warning: Could not find BitBake worker script"
+          fi
+          BB_UTILS=$(find . -name "utils.py" -path "*/bitbake/lib/bb/*" -type f | head -n 1)
+          if [ -n "$BB_UTILS" ]; then
+            cp "$BB_UTILS" "$BB_UTILS.orig"
+            sed -i 's/def disable_network(uid, gid):/def disable_network(uid, gid):\n    return  # Function disabled for CI build/' "$BB_UTILS"
+          else
+            echo "Warning: Could not find BitBake utils.py"
+          fi
+
+      - name: Build Yocto Image with KAS
+        run: |
+          cd meta-hailo-soc
+          ulimit -n 65536 || echo "WARN: cannot raise the fd limit"
+
+          export BB_ISOLATE_NETWORK=0
+          export BB_NO_NETWORK=0
+
+          # Where the base layer finds the key (see recipes-bsp/hailo-secureboot-assets here).
+          export QBA_SECURE_ASSETS_DIR="$RUNNER_TEMP/qba-assets"
+
+          # Readable BSP version, shown on the board by sysele-info. Only a tag sets it; any other
+          # build stays "unreleased".
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            export SYSELE_BSP_VERSION="${{ github.ref_name }}"
+          fi
+
+          export BITBAKE_UI_OPTS="-k"
+          export BB_LOGCONFIG=""
+          export BB_CONSOLELOG=""
+          export BB_DEFAULT_TASK="build"
+          export GITHUB_ACTIONS_BUILD=1
+          export BB_ENV_PASSTHROUGH_ADDITIONS="QBA_SECURE_ASSETS_DIR SYSELE_BSP_VERSION GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID BB_ISOLATE_NETWORK BB_NO_NETWORK BITBAKE_UI_OPTS BB_LOGCONFIG BB_CONSOLELOG BB_DEFAULT_TASK GITHUB_ACTIONS_BUILD"
+
+          set -e
+          if ! kas build qbastrial-h15-ci.yml -- -k; then
+            echo "ERROR: KAS build failed"
+            exit 1
+          fi
+
+      - name: Collect Failed Task Logs
+        if: failure()
+        run: |
+          set +e
+          BUILD=meta-hailo-soc/build
+          mkdir -p failure-logs
+          COOKER=$(ls -t "$BUILD"/tmp/log/cooker/*/console-latest.log 2>/dev/null | head -1)
+          [ -n "$COOKER" ] && tail -n 200 "$COOKER" || echo "(no cooker log)"
+          df -h; free -h
+          find "$BUILD/tmp/log" -name '*.log' -exec \
+            grep -h "Logfile of failure stored in:" {} + 2>/dev/null \
+            | sed 's/.*stored in: //' | tr -d '\r' | sort -u > /tmp/failed.txt
+          while read -r f; do
+            [ -f "$f" ] || continue
+            name=$(printf '%s' "$f" | sed 's|.*/tmp/work/||; s|/|_|g')
+            cp "$f" "failure-logs/$name"
+            tail -n 120 "$f"
+          done < /tmp/failed.txt
+          grep -rlE "PRIVATE KEY|BEGIN .*KEY" failure-logs/ 2>/dev/null | xargs -r rm -f
+
+      - name: Remove the key and other sensitive files
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/qba-assets"
+          find meta-hailo-soc/ -name "customer_keypair.pem" -delete || true
+          find meta-hailo-soc/ -name "*.pem" -delete || true
+          find meta-hailo-soc/ -name "*private*key*" -delete || true
+          find meta-hailo-soc/build -name "*.log" -exec grep -l "PRIVATE\|SECRET\|KEY" {} \; -delete || true
+
+      - name: Validate Release Artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY="meta-hailo-soc/build/tmp/deploy/images/astrial-h15"
+          required_artifacts=(
+            "core-image-hailo-dev-astrial-h15.wic"
+            "hailo-update-image-astrial-h15.swu"
+            "fitImage-astrial-h15.bin"
+            "u-boot-initial-env-astrial-h15"
+            "hailo15_uart_recovery_fw.bin"
+            "hailo15_scu_bl.bin"
+            "scu_bl_cfg_a.bin"
+            "hailo15_scu_fw.bin"
+            "u-boot.dtb.signed"
+            "u-boot-spl.bin"
+            "u-boot-initial-env"
+            "customer_certificate.bin"
+            "u-boot-tfa.itb"
+          )
+          for artifact in "${required_artifacts[@]}"; do
+            if [ ! -s "${DEPLOY}/${artifact}" ]; then
+              echo "::error file=${DEPLOY}/${artifact}::Required release artifact is missing or empty"
+              exit 1
+            fi
+            ls -lh "${DEPLOY}/${artifact}"
+          done
+          for script in hailo15_spi_flash_program program_spi_flash.sh tftp_server.py uart_boot_fw_loader; do
+            if [ ! -s "meta-sysele-bsp/scripts/${script}" ]; then
+              echo "::error::Required script ${script} is missing or empty"
+              exit 1
+            fi
+          done
+
+      - name: Archive Build Artifacts
+        id: upload_build
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbastrial-h15-yocto-build
+          path: |
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/core-image-hailo-dev-astrial-h15.wic
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/hailo-update-image-astrial-h15.swu
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/fitImage-astrial-h15.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/u-boot-initial-env-astrial-h15
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/hailo15_uart_recovery_fw.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/hailo15_scu_bl.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/scu_bl_cfg_a.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/hailo15_scu_fw.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/u-boot.dtb.signed
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/u-boot-spl.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/u-boot-initial-env
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/customer_certificate.bin
+            meta-hailo-soc/build/tmp/deploy/images/astrial-h15/u-boot-tfa.itb
+            meta-sysele-bsp/scripts/
+          if-no-files-found: error
+
+      - name: Archive Build Logs
+        id: upload_logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qbastrial-h15-build-logs
+          path: |
+            meta-hailo-soc/build/tmp/log/
+            failure-logs/
+          if-no-files-found: warn
+
+      - name: Download Links
+        if: always()
+        env:
+          BUILD_URL: ${{ steps.upload_build.outputs.artifact-url }}
+          LOGS_URL: ${{ steps.upload_logs.outputs.artifact-url }}
+        run: |
+          echo "Image and flashing files: ${BUILD_URL:-not produced, the build did not get that far}"
+          echo "Build logs:               ${LOGS_URL:-not produced}"
+
+      - name: Download Build Artifacts for Release
+        if: github.ref_type == 'tag'
+        uses: actions/download-artifact@v4
+        with:
+          name: qbastrial-h15-yocto-build
+          path: ./release-files
+
+      - name: Create Compressed Release Archive
+        if: github.ref_type == 'tag'
+        run: |
+          cd release-files
+          cp -p meta-sysele-bsp/scripts/* .
+          chmod +x *.sh *.py hailo15_* uart_* 2>/dev/null || true
+          NAME="qbastrial-h15-yocto-build-${{ github.ref_name }}"
+          echo "ARCHIVE_NAME=$NAME" >> "$GITHUB_ENV"
+          tar -czf "../$NAME.tar.gz" .
+          cd ..
+          ls -lh "$NAME.tar.gz"
+
+      - name: Publish the release for the pushed tag
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: QBAstrial H15 BSP ${{ github.ref_name }}
+          body: |
+            Layer `meta-sysele-qbastrial-h15` on `meta-sysele-astrial-h15` at `${{ env.BASE_LAYER_REF }}`.
+
+            - Commit: ${{ github.sha }}
+            - Yocto: kirkstone (poky `yocto-4.0.35`), Hailo Vision Processor package ${{ env.HAILO_SOC_TAG }}
+
+            Download and extract `${{ env.ARCHIVE_NAME }}.tar.gz`. The SPI-NOR is programmed once through
+            the mask ROM on UART1 with `program_spi_flash.sh`; the system image `core-image-hailo-dev-astrial-h15.wic`
+            goes to the eMMC over TFTP from the U-Boot menu.
+
+            Flashing needs Hailo's `hailo15_board_tools` Python package, which is not included here.
+          files: ${{ env.ARCHIVE_NAME }}.tar.gz
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

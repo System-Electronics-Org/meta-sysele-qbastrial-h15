@@ -1,0 +1,12 @@
+header:
+  version: 11
+
+# kas drops shell variables that are not declared here. The value below is the default, the
+# shell wins. The CI sets QBA_SECURE_ASSETS_DIR to the private directory that holds the key.
+env:
+  QBA_SECURE_ASSETS_DIR: ""
+  SYSELE_BSP_VERSION: "unreleased"
+
+repos:
+  meta-sysele-qbastrial-h15:
+    path: ./meta-sysele-qbastrial-h15
