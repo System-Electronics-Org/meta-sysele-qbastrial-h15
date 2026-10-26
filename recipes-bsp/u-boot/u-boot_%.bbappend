@@ -30,4 +30,12 @@ DTS
     # reopening the menu, which has no timeout.
     sed -i 's|run update_wic_mmc1 && bootmenu -1|run update_wic_mmc1 \&\& run boot_mmc1|' \
         ${S}/include/configs/astrial-h15.h
+
+    # The Autodetect entry of this machine lacks the check that every other Hailo configuration has:
+    # when the SCU reports a remote update (boot_image_mode = 1, set by /etc/run_swupdate.sh) the
+    # board must boot swupdate-image. Without it the official OTA launch just boots Linux again.
+    if ! grep -q 'boot_image_mode' ${S}/include/configs/astrial-h15.h; then
+        sed -i '/"bootmenu_0=Autodetect=" \\/a\        "if test ${boot_image_mode} = 1; then run boot_swupdate_mmc; exit 1; fi; " \\' \
+            ${S}/include/configs/astrial-h15.h
+    fi
 }
