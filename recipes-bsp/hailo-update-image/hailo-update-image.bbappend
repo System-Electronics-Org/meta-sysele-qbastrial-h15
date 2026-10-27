@@ -3,16 +3,10 @@
 # kernel command line, would write to the wrong disk.
 SWUPDATE_DEFAULT_FILESYSTEM_DEVICE:astrial-h15 = "mmcblk1"
 
-# QBAstrial ships one kind of update: rootfs and fitImage, slot A. The SPI-NOR is programmed once through the
-# mask ROM and is not touched by an OTA, so the SCU, U-Boot and environment images of the Hailo SWU are left out
-# of the package. The sw-description here also carries the sha256 of every entry, which swupdate requires as
-# soon as it checks signatures.
+# The sw-description here is Hailo's, with the sha256 of every entry added: swupdate requires it as soon as it checks
+# signatures. Nothing else of the package changes (images, scripts and modes are Hailo's), so the A/B update with its
+# firmware copies is the one Hailo ships.
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
-SRC_URI = " \
-    file://sw-description \
-    file://resize_fs.sh \
-    "
-SWUPDATE_IMAGES = "fitImage ${HAILO_TARGET}"
 
 # Signature of sw-description. QBA_SWU_PRIVATE_KEY is set by whoever builds (local.conf or the CI secret); it
 # never lives in this layer. Without it the SWU is built unsigned, and a swupdate that checks signatures will
