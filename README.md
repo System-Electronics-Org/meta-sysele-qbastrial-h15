@@ -46,10 +46,15 @@ What this layer changes for that to work on the Astrial H15:
 
 - `bootmenu_0` checks `boot_image_mode` and boots `swupdate-image` on a remote update. The base layer lacks that line.
 - The SWU defaults to `mmcblk1` (the eMMC). The base layer falls back to `mmcblk0` (the SD slot).
-- The SWU holds only the root file system and the `fitImage`, slot A. The SPI-NOR is programmed once through the mask ROM and
-  is not touched by an OTA.
+- The SWU is Hailo's complete one (partitioning, SCU bootloader, slot A and slot B with their firmware copies in the
+  SPI-NOR), with the sha256 of every entry added: swupdate requires it as soon as it checks signatures.
 - swupdate checks the signature of `sw-description` (RSA-PSS) and the sha256 of every entry. The public key is installed as
-  `/etc/swupdate-public.pem` in both the system and `swupdate-image`; an unsigned, altered or wrongly signed SWU is refused.
+  `/etc/swupdate-public.pem` in both the system and `swupdate-image`, and `run_swupdate.sh` passes it in dual (A/B) mode as
+  well; an unsigned, altered or wrongly signed SWU is refused.
+
+First installation of a board: `fw_setenv swupdate_update_modes init-partitions-dual,init-scu-bl,copy-a,copy-b`, then
+`run_swupdate.sh -b -s <server> -r <file>.swu`. Later updates from the running system: `run_swupdate.sh -b -d -s <server> -r
+<file>.swu`, which writes the other slot and makes it the next one to boot.
 
 The SWU is signed at build time with the key in `QBA_SWU_PRIVATE_KEY` (a path to an RSA private key, never part of this
 repository). The matching public key is read from `QBA_SECURE_ASSETS_DIR/swupdate-public.pem`. Without a signing key the SWU is
