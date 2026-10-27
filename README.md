@@ -56,6 +56,27 @@ First installation of a board: `fw_setenv swupdate_update_modes init-partitions-
 `run_swupdate.sh -b -s <server> -r <file>.swu`. Later updates from the running system: `run_swupdate.sh -b -d -s <server> -r
 <file>.swu`, which writes the other slot and makes it the next one to boot.
 
+## Fall back to the other slot
+
+The SCU bootloader can switch to another image when one does not come up (Hailo OS User Guide 1.12.0, chapter 8): it retries
+the same image `boot_max_retries` times, each ending in a watchdog reset, then boots the next descriptor. Hailo's configuration
+files list a single image and set `boot_max_retries` to `0xFF`, which turns the switch off, so a slot that boots and never comes
+up stays there. This layer turns it on:
+
+- `scu_bl_cfg_a` lists slot A first and slot B second, `scu_bl_cfg_b` the other way round, three retries each. `set_sw_image.sh`
+  copies these files, so after an update the new slot is the first choice and the old one the fallback.
+- `watchdog.open_timeout` (60 s) is added to the kernel command line of the eMMC boot only. Without it the kernel keeps feeding
+  the watchdog U-Boot started, and a slot without a working user space waits forever. `swupdate-image` does not get it: it runs for
+  minutes without opening the watchdog.
+- The `watchdog` daemon starts at S98 and keeps `/dev/watchdog` fed.
+- `hailo_linux_init.sh` moves from S50 to S99. It writes `boot_success_ap_software`, and the SCU bootloader does not count a boot
+  after that flag as failed: with the flag set at S50, a slot that died later was reset forever without a fallback.
+- `qba-slot-sync` (S98) compares the configuration in the SPI-NOR with the one the image ships for the slot that booted and
+  rewrites it when they differ: after a fallback, or after an update made by an image whose configuration had no fallback.
+
+The configuration is not authenticated by the secure boot chain (Hailo OS User Guide), so whoever can write the SPI-NOR can change
+which slot starts.
+
 The SWU is signed at build time with the key in `QBA_SWU_PRIVATE_KEY` (a path to an RSA private key, never part of this
 repository). The matching public key is read from `QBA_SECURE_ASSETS_DIR/swupdate-public.pem`. Without a signing key the SWU is
 built unsigned, and the images refuse it.
