@@ -1,0 +1,48 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          qba-slot-sync
+# Required-Start:    $local_fs
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: keep the SCU bootloader configuration in step with the slot that booted
+### END INIT INFO
+
+# The SCU bootloader configuration in the SPI-NOR has to be the one this image ships for the slot that booted. Two cases
+# make it differ:
+#  - the SCU bootloader fell back to the second image: the configuration still lists the slot that failed first, so
+#    every reset would try it again, three times, before coming back here;
+#  - this slot was installed by an image whose configuration has no fallback, so the update wrote that one.
+# Once the slot is up, write the configuration of this image for it. Nothing is written when they already match.
+
+GET=/etc/get_sw_image.sh
+SET=/etc/set_sw_image.sh
+DEV=$(/etc/get_boot_dev.sh --firmware 2>/dev/null)
+
+cfg_matches() {
+    want="$1"
+    size=$(stat -c %s "$want")
+    for blk in 5 6; do
+        have=$(dd if="/dev/$DEV" bs=4096 skip=$blk count=1 2>/dev/null | head -c "$size" | md5sum | cut -d' ' -f1)
+        [ "$have" = "$(md5sum < "$want" | cut -d' ' -f1)" ] || return 1
+    done
+    return 0
+}
+
+case "$1" in
+    start)
+        [ -n "$DEV" ] || exit 0
+        booted=$("$GET" --boot) || exit 0
+        case "$booted" in a|b) ;; *) exit 0 ;; esac
+        want="/etc/scu_bl_cfg/scu_bl_cfg_$booted.bin"
+        [ -r "$want" ] || exit 0
+        cfg_matches "$want" && exit 0
+        echo "qba-slot-sync: the SCU bootloader configuration is not the one of slot $booted; writing it"
+        if ! "$SET" "$booted"; then
+            echo "qba-slot-sync: could not update the SCU bootloader configuration" >&2
+        fi
+        ;;
+    stop|restart|reload|force-reload) ;;
+    *) echo "Usage: $0 start" >&2; exit 1 ;;
+esac
+exit 0
