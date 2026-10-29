@@ -2,11 +2,9 @@ name: QBAstrial H15 Yocto Build
 
 run-name: QBAstrial H15 Build • ${{ github.ref_name }}
 
-# Builds the QBAstrial H15 image on top of meta-sysele-astrial-h15, which is cloned at a pinned
-# commit. A tag v*.*.* publishes a release; a manual run only leaves the artifacts of the run.
-#
-# No pull_request trigger on purpose: this repository is public and the build uses the secure boot
-# key, which a workflow started from a fork must never see.
+# Builds the QBAstrial H15 image on top of meta-sysele-astrial-h15 at a pinned commit.
+# A tag vX.Y.Z publishes a release; a manual run keeps the artifacts of the run.
+# No pull_request trigger: the build uses the signing keys, which a fork must not reach.
 on:
   workflow_dispatch:
   push:
@@ -15,12 +13,11 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+'
 
 env:
-  # meta-sysele-astrial-h15, branch kirkstone. Bump it on purpose, with a commit of this repository.
-  BASE_LAYER_REPO: System-Electronics-Org/meta-sysele-h15-5.15.32
-  BASE_LAYER_REF: cebabf589eb27855bfa58372d708bb42c7bd14f2
+  # meta-sysele-astrial-h15, tag v1.2.2.
+  BASE_LAYER_REPO: System-Electronics-Org/meta-sysele-astrial-h15
+  BASE_LAYER_REF: 6d15fef02e0e5547f48db8dd0b255d4b74238ba8
   HAILO_SOC_TAG: 1.12.0
-  # sha256 of the output of `openssl rsa -noout -modulus` for the customer key pair (modulus 9E71...).
-  # It is derived from the public part: it identifies the key, it does not reveal it.
+  # sha256 of `openssl rsa -noout -modulus` of the customer key pair (modulus 9E71...).
   KEY_MODULUS_SHA256: baa96baf0ea08e7d31c3986972b9ea240132d265a882219ae5015b25f80f9155
 
 jobs:
@@ -29,30 +26,51 @@ jobs:
     permissions:
       contents: write
     steps:
-      # First step on purpose: a missing or wrong key must stop the run in seconds, not after hours
-      # of compiling, and a build without the key would be refused by the SPL anyway.
+      # First step: a missing or wrong key stops the run before the build.
       - name: Check the secure boot key
         env:
           HAILO_CUSTOMER_KEYPAIR: ${{ secrets.HAILO_CUSTOMER_KEYPAIR }}
         run: |
           set -euo pipefail
           if [ -z "$HAILO_CUSTOMER_KEYPAIR" ]; then
-            echo "::error::Secret HAILO_CUSTOMER_KEYPAIR is missing. A build without it cannot be flashed."
+            echo "::error::Secret HAILO_CUSTOMER_KEYPAIR is missing."
             exit 1
           fi
           umask 077
           mkdir -p "$RUNNER_TEMP/qba-assets"
           printf '%s\n' "$HAILO_CUSTOMER_KEYPAIR" > "$RUNNER_TEMP/qba-assets/customer_keypair.pem"
           if ! openssl rsa -in "$RUNNER_TEMP/qba-assets/customer_keypair.pem" -check -noout >/dev/null 2>&1; then
-            echo "::error::HAILO_CUSTOMER_KEYPAIR is not a valid RSA private key (truncated or wrong paste?)."
+            echo "::error::HAILO_CUSTOMER_KEYPAIR is not a valid RSA private key."
             exit 1
           fi
           got=$(openssl rsa -in "$RUNNER_TEMP/qba-assets/customer_keypair.pem" -noout -modulus 2>/dev/null | sha256sum | cut -d' ' -f1)
           if [ "$got" != "$KEY_MODULUS_SHA256" ]; then
-            echo "::error::HAILO_CUSTOMER_KEYPAIR is a valid key but not the expected one (modulus hash ${got:0:16}, expected ${KEY_MODULUS_SHA256:0:16})."
+            echo "::error::HAILO_CUSTOMER_KEYPAIR has an unexpected modulus (${got:0:16}, expected ${KEY_MODULUS_SHA256:0:16})."
             exit 1
           fi
-          echo "Secure boot key is valid and has the expected modulus (${got:0:16})."
+          echo "Secure boot key verified (${got:0:16})."
+
+      # The SWU signing key. Its public half goes into the images.
+      - name: Check the SWU signing key
+        env:
+          SWU_SIGNING_KEY: ${{ secrets.SWU_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SWU_SIGNING_KEY" ]; then
+            echo "::error::Secret SWU_SIGNING_KEY is missing."
+            exit 1
+          fi
+          umask 077
+          mkdir -p "$RUNNER_TEMP/qba-assets"
+          printf '%s\n' "$SWU_SIGNING_KEY" > "$RUNNER_TEMP/qba-assets/swu_signing_key.pem"
+          if ! openssl rsa -in "$RUNNER_TEMP/qba-assets/swu_signing_key.pem" -check -noout >/dev/null 2>&1; then
+            echo "::error::SWU_SIGNING_KEY is not a valid RSA private key."
+            exit 1
+          fi
+          openssl pkey -in "$RUNNER_TEMP/qba-assets/swu_signing_key.pem" -pubout -out "$RUNNER_TEMP/qba-assets/swupdate-public.pem"
+          pub=$(openssl pkey -pubin -in "$RUNNER_TEMP/qba-assets/swupdate-public.pem" -outform DER | sha256sum | cut -c1-16)
+          echo "SWU signing key verified. Public key fingerprint: $pub"
+          echo "SWU_PUBKEY_FINGERPRINT=$pub" >> "$GITHUB_ENV"
 
       - name: Install Dependencies
         run: |
@@ -89,7 +107,6 @@ jobs:
           cp -r ../meta-sysele-bsp ./meta-sysele-bsp
           cp -r ../meta-sysele-qbastrial-h15 ./meta-sysele-qbastrial-h15
 
-          # The last include of the base layer (machine.yml) carries the poky pin.
           cat > qbastrial-h15-ci.yml <<'KAS'
           header:
             version: 11
@@ -131,11 +148,10 @@ jobs:
           export BB_ISOLATE_NETWORK=0
           export BB_NO_NETWORK=0
 
-          # Where the base layer finds the key (see recipes-bsp/hailo-secureboot-assets here).
           export QBA_SECURE_ASSETS_DIR="$RUNNER_TEMP/qba-assets"
+          export QBA_SWU_PRIVATE_KEY="$RUNNER_TEMP/qba-assets/swu_signing_key.pem"
 
-          # Readable BSP version, shown on the board by sysele-info. Only a tag sets it; any other
-          # build stays "unreleased".
+          # BSP version shown on the board: the tag name, "unreleased" otherwise.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             export SYSELE_BSP_VERSION="${{ github.ref_name }}"
           fi
@@ -145,7 +161,7 @@ jobs:
           export BB_CONSOLELOG=""
           export BB_DEFAULT_TASK="build"
           export GITHUB_ACTIONS_BUILD=1
-          export BB_ENV_PASSTHROUGH_ADDITIONS="QBA_SECURE_ASSETS_DIR SYSELE_BSP_VERSION GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID BB_ISOLATE_NETWORK BB_NO_NETWORK BITBAKE_UI_OPTS BB_LOGCONFIG BB_CONSOLELOG BB_DEFAULT_TASK GITHUB_ACTIONS_BUILD"
+          export BB_ENV_PASSTHROUGH_ADDITIONS="QBA_SECURE_ASSETS_DIR QBA_SWU_PRIVATE_KEY SYSELE_BSP_VERSION GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID BB_ISOLATE_NETWORK BB_NO_NETWORK BITBAKE_UI_OPTS BB_LOGCONFIG BB_CONSOLELOG BB_DEFAULT_TASK GITHUB_ACTIONS_BUILD"
 
           set -e
           if ! kas build qbastrial-h15-ci.yml -- -k; then
@@ -290,11 +306,13 @@ jobs:
             - Commit: ${{ github.sha }}
             - Yocto: kirkstone (poky `yocto-4.0.35`), Hailo Vision Processor package ${{ env.HAILO_SOC_TAG }}
 
-            Download and extract `${{ env.ARCHIVE_NAME }}.tar.gz`. The SPI-NOR is programmed once through
-            the mask ROM on UART1 with `program_spi_flash.sh`; the system image `core-image-hailo-dev-astrial-h15.wic`
-            goes to the eMMC over TFTP from the U-Boot menu.
+            Extract `${{ env.ARCHIVE_NAME }}.tar.gz`. `program_spi_flash.sh` programs the SPI-NOR once, through the
+            mask ROM on UART1; `core-image-hailo-dev-astrial-h15.wic` goes to the eMMC over TFTP from the U-Boot menu.
 
-            Flashing needs Hailo's `hailo15_board_tools` Python package, which is not included here.
+            The SWU is signed (RSA-PSS). The images accept only the key with public fingerprint
+            `${{ env.SWU_PUBKEY_FINGERPRINT }}` (sha256 of the DER, first 16 hex digits).
+
+            Flashing requires Hailo's `hailo15_board_tools`, not included.
           files: ${{ env.ARCHIVE_NAME }}.tar.gz
           prerelease: ${{ contains(github.ref_name, '-rc') }}
         env:

@@ -1,7 +1,4 @@
-# QBAstrial: Linux console on UART0 (ttyS0, serial0), and no display.
-#
-# The board DTS is copied into ${S} by the do_configure:prepend of meta-sysele-bsp, so this
-# runs after the copy. astrial-h15-ws101.dts includes astrial-h15.dts and follows it.
+# Linux console on UART0 (ttyS0) and no display.
 
 do_configure:append() {
     if ! grep -q 'QBAstrial: console on UART0' ${S}/arch/arm64/boot/dts/sysele/astrial-h15.dts; then
@@ -14,7 +11,7 @@ do_configure:append() {
     };
 };
 
-/* QBAstrial: no display. The DSI path and the panel it was wired to are switched off. */
+/* QBAstrial: no display */
 &panel_touch {
     status = "disabled";
 };

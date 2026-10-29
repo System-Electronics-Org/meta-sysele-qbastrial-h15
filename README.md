@@ -1,44 +1,66 @@
 # meta-sysele-qbastrial-h15
 
-Layer on top of `meta-sysele-astrial-h15` (collection `meta-sysele-bsp`) for the QBAstrial H15 product.
-It only holds the difference from the base layer. Collection `sysele-qba-bsp`, priority 11.
+Layer for the QBAstrial H15 smart camera, on top of `meta-sysele-astrial-h15` (collection `meta-sysele-bsp`).
+It holds only the difference from the base layer. Collection `sysele-qba-bsp`, priority 11.
 
-## What it changes
+## Differences from the base layer
 
-| Where | What |
+| Area | Change |
 |---|---|
-| U-Boot DTB | the node labelled `serial` moves from uart1 (0x109000) to uart0 (0x108000), SPL included |
-| U-Boot `BOOTARGS_BASE` | `console=ttyS0` instead of `ttyS1` |
-| Linux DTS | `chosen/stdout-path = &serial0` |
-| `SERIAL_CONSOLES` | `115200;ttyS0`, so the getty is on ttyS0 |
+| Console | U-Boot (SPL included), kernel and getty on UART0 (`ttyS0`) |
+| Display | none: DSI, DPI and panel nodes disabled, Waveshare trees and DSI tools removed |
+| Identity | hostname `qbastrialh15`, banner `QBAstrial H15` |
+| Update | signed SWU, A/B with fallback to the other slot |
 
-The first programming of a blank SPI-NOR still goes through the mask ROM on UART1. After that, U-Boot
-and Linux talk on UART0.
+The SPI-NOR is programmed once through the mask ROM on UART1; from the first boot on, U-Boot and Linux use UART0.
 
-## Status
+## Update
 
-v0.0.0 builds and boots on an Astrial H15 board: SPL, U-Boot and the login on UART0, wic update over TFTP,
-automatic boot from eMMC afterwards. `kas/qbastrial-h15.yml` and `.github/workflows/build.yml` build it in CI;
-the workflow has not run yet.
+`/etc/run_swupdate.sh` fetches the SWU over TFTP and installs it without a console.
 
-## What v0.0.0 changes on top of `meta-sysele-astrial-h15` (`kirkstone`)
+- First installation: `fw_setenv swupdate_update_modes init-partitions-dual,init-scu-bl,copy-a,copy-b`, then
+  `run_swupdate.sh -b -s <server> -r <file>.swu`.
+- Update: `run_swupdate.sh -b -d -s <server> -r <file>.swu` writes the other slot and boots it next.
 
-- Console on UART0 for U-Boot (SPL included), the kernel command line, the device tree and the login getty.
-- Hostname `qbastrialh15`, so the prompt reads `root@qbastrialh15`.
-- No display: `KERNEL_DEVICETREE` keeps only `sysele/astrial-h15.dtb`, the DSI/DPI/D-PHY and panel nodes are
-  disabled, and the DSI test tools are left out of the image. The kernel DSI patches stay (inert).
-- The banner reads `QBAstrial H15`. `BSP` shows `unreleased` on a local build; a tagged CI build exports
-  `SYSELE_BSP_VERSION` with the tag name, as the base layer does.
-- After "Update eMMC (wic) from TFTP" the board boots from eMMC instead of reopening the menu.
-- The secure boot key pair is not in this repository. Set `QBA_SECURE_ASSETS_DIR` to a private directory
-  that holds `customer_keypair.pem`.
+The SWU is Hailo's, with the sha256 of every entry added. swupdate verifies the RSA-PSS signature of `sw-description`
+and every hash with `/etc/swupdate-public.pem`, in the system and in `swupdate-image`. An unsigned, altered or
+wrongly signed SWU is refused.
 
-Build order: `u-boot u-boot-tfa-image`, then `swupdate-image`, then `core-image-hailo-dev`, each as its own
-`bitbake` command (the image needs `swupdate-image-*.ext4.gz` in the boot partition without declaring it).
+The SWU is signed at build time with `QBA_SWU_PRIVATE_KEY`, the path of an RSA private key. The public key is read
+from `QBA_SECURE_ASSETS_DIR/swupdate-public.pem`. Without a key the SWU is unsigned and the images refuse it.
+
+## Fallback to the other slot
+
+The SCU bootloader boots the next descriptor after `boot_max_retries` boots that end in a watchdog reset.
+
+- The configuration lists the target slot, the other slot and the target slot again, two boots each. `set_sw_image.sh`
+  writes it, so after an update the new slot is first and the old one is the fallback.
+- `watchdog.open_timeout` (60 s) is on the kernel command line of the eMMC boot. The `watchdog` daemon starts at S98 and
+  feeds `/dev/watchdog`.
+- `hailo_linux_init.sh` runs at S99 and sets `boot_success_ap_software` once the daemon is up.
+- `qba-slot-sync` (S98) mounts the `/boot` of the booted slot. When the SPI-NOR configuration differs from the one of the
+  booted slot, as after a fallback, it rewrites it and writes 99 to `boot_success_ap_software`, which resets the descriptor
+  index the SCU keeps across warm resets.
+
+The SCU bootloader configuration is not authenticated by the secure boot chain.
+
+## Keys
+
+Neither key is in this repository. `QBA_SECURE_ASSETS_DIR` holds `customer_keypair.pem` (secure boot) and
+`swupdate-public.pem`.
+
+## Build
+
+```
+bitbake u-boot u-boot-tfa-image
+bitbake swupdate-image
+bitbake core-image-hailo-dev
+bitbake hailo-update-image
+```
 
 ## CI
 
-`.github/workflows/build.yml` runs on a manual dispatch or on a tag `vX.Y.Z`. It clones `meta-sysele-astrial-h15` at the
-commit pinned in `BASE_LAYER_REF`, checks the secure boot key first (valid RSA key, expected modulus), builds with kas
-and, on a tag, publishes the release. The key comes from the repository secret `HAILO_CUSTOMER_KEYPAIR`. There is no
-`pull_request` trigger, so a fork cannot reach the secret.
+`.github/workflows/build.yml` runs on manual dispatch or on a tag `vX.Y.Z`. It pins `meta-sysele-astrial-h15` at
+`BASE_LAYER_REF`, verifies the keys, builds with kas and, on a tag, publishes the release. Secrets:
+`HAILO_CUSTOMER_KEYPAIR` (secure boot) and `SWU_SIGNING_KEY` (SWU signing). The run stops before the build if either is
+missing or invalid.
