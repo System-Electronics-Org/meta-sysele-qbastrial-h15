@@ -47,3 +47,5 @@ DTS
 }
 
 SRC_URI:append = " file://qba-dts-audio.dtsi file://qba-audio.cfg"
+
+SRC_URI:append = " file://qba-pcie.cfg"
