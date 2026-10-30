@@ -1,0 +1,16 @@
+/* QBAstrial: no power and temperature monitors, they belong to Hailo's evaluation board */
+&ina231_1v8 {
+    status = "disabled";
+};
+
+&ina231_DDR_VDDQX {
+    status = "disabled";
+};
+
+&ina231_0v8 {
+    status = "disabled";
+};
+
+&tmp175_NEAR_H15_SOC {
+    status = "disabled";
+};
