@@ -17,7 +17,7 @@ DTS
 
     # BOOTARGS_BASE is guarded by #ifndef in hailo1x_common.h: define it before the include.
     if ! grep -q 'define BOOTARGS_BASE' ${S}/include/configs/astrial-h15.h; then
-        sed -i '/#include "hailo15_common.h"/i #define BOOTARGS_BASE "console=ttyS0,${baudrate}n8 earlycon loglevel=8 rootwait debug"\n' \
+        sed -i '/#include "hailo15_common.h"/i #define BOOTARGS_BASE "console=ttyS0,${baudrate}n8 quiet loglevel=3 rootwait"\n' \
             ${S}/include/configs/astrial-h15.h
     fi
 
