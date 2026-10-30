@@ -1,0 +1,8 @@
+/* QBAstrial: no SD card slot; the eMMC is sdio1 */
+&sdio0 {
+    status = "disabled";
+};
+
+&sdio0_reserved {
+    status = "disabled";
+};
