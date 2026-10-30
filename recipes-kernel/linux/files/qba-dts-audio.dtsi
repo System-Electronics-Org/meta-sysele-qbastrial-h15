@@ -1,0 +1,13 @@
+/* QBAstrial: no audio. The bit-banged I2C bus of the codec stays enabled: it keeps the I2C bus numbers (the camera
+   is i2c-1, Sensor<N>_Entry.cfg names the bus). */
+&audio_card_master {
+    status = "disabled";
+};
+
+&i2s_cpu_master {
+    status = "disabled";
+};
+
+&codec_wm8960 {
+    status = "disabled";
+};

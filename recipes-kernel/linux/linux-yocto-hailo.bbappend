@@ -45,3 +45,5 @@ DTS
         fi
     done
 }
+
+SRC_URI:append = " file://qba-dts-audio.dtsi file://qba-audio.cfg"
