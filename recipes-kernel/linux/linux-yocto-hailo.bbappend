@@ -1,5 +1,7 @@
 # Linux console on UART0 (ttyS0) and no display.
 
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+
 do_configure:append() {
     if ! grep -q 'QBAstrial: console on UART0' ${S}/arch/arm64/boot/dts/sysele/astrial-h15.dts; then
         cat >> ${S}/arch/arm64/boot/dts/sysele/astrial-h15.dts <<'DTS'
@@ -33,4 +35,13 @@ do_configure:append() {
 };
 DTS
     fi
+
+    # Hardware the QBAstrial does not have: one qba-dts-<name>.dtsi per piece, each with its own qba-<name>.cfg
+    # for the kernel configuration, so that a piece can be put back on its own.
+    for f in ${WORKDIR}/qba-dts-*.dtsi; do
+        [ -f "$f" ] || continue
+        if ! grep -q "$(basename $f)" ${S}/arch/arm64/boot/dts/sysele/astrial-h15.dts; then
+            { echo; echo "/* $(basename $f) */"; cat "$f"; } >> ${S}/arch/arm64/boot/dts/sysele/astrial-h15.dts
+        fi
+    done
 }
