@@ -53,3 +53,5 @@ SRC_URI:append = " file://qba-pcie.cfg"
 SRC_URI:append = " file://qba-dts-i2c-monitors.dtsi"
 
 SRC_URI:append = " file://qba-dts-sdcard.dtsi"
+
+SRC_URI:append = " file://qba-radios.cfg"
